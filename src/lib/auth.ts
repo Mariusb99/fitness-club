@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { isSupabaseConfigured } from "./supabase/env";
 import { createClient } from "./supabase/server";
@@ -11,8 +12,18 @@ import { mapProfileRow } from "./supabase/mappers";
  * neconfigurat încă) se folosește contul admin din datele demonstrative,
  * ca să poți naviga prin toată platforma înainte de a conecta baza de
  * date reală.
+ *
+ * Împachetată în `cache()` din React: atât layout-ul din `(app)`, cât și
+ * fiecare pagină apelează `requireProfile()`/`requireAdmin()` separat, ca
+ * fiecare fișier să rămână independent. Fără `cache()`, asta însemna două
+ * interogări complete către Supabase (autentificare + profil) la fiecare
+ * navigare — layout-ul le făcea o dată, apoi pagina le repeta identic.
+ * `cache()` memorează rezultatul per request: al doilea apel (din pagină)
+ * returnează instant rezultatul calculat deja de layout, fără alt drum
+ * dus-întors către server. Asta elimină jumătate din latența resimțită la
+ * schimbarea paginilor.
  */
-export async function getCurrentProfile(): Promise<Profile | null> {
+export const getCurrentProfile = cache(async (): Promise<Profile | null> => {
   if (!isSupabaseConfigured()) {
     return SEED_PROFILES[0];
   }
@@ -35,7 +46,7 @@ export async function getCurrentProfile(): Promise<Profile | null> {
   // sesiunea din browser e încă validă.
   if (!profile.isActive) return null;
   return profile;
-}
+});
 
 export async function requireProfile(): Promise<Profile> {
   const profile = await getCurrentProfile();
