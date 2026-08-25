@@ -31,20 +31,24 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // `getClaims()` verifică JWT-ul local (JWKS al proiectului, cache-uit),
+  // fără cerere de rețea către serverul de autentificare la fiecare navigare
+  // — spre deosebire de `getUser()`. Aici verificăm doar dacă sesiunea e
+  // validă (pentru redirect); citirea reală a profilului, mai jos în
+  // aplicație, e oricum re-validată de Supabase prin RLS.
+  const { data: claimsData } = await supabase.auth.getClaims();
+  const isAuthenticated = Boolean(claimsData?.claims);
 
   const path = request.nextUrl.pathname;
   const isPublic = PUBLIC_PATHS.some((p) => path.startsWith(p));
 
-  if (!user && !isPublic && path !== "/") {
+  if (!isAuthenticated && !isPublic && path !== "/") {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     return NextResponse.redirect(loginUrl);
   }
 
-  if (user && path === "/login") {
+  if (isAuthenticated && path === "/login") {
     const dashboardUrl = request.nextUrl.clone();
     dashboardUrl.pathname = "/dashboard";
     return NextResponse.redirect(dashboardUrl);

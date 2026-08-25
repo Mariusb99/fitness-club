@@ -29,15 +29,19 @@ export const getCurrentProfile = cache(async (): Promise<Profile | null> => {
   }
 
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+  // `getClaims()` verifică JWT-ul local (folosind cheile de semnare ale
+  // proiectului), fără drum dus-întors către serverul de autentificare —
+  // spre deosebire de `getUser()`, care face mereu o cerere de rețea. Citirea
+  // profilului care urmează e oricum re-validată independent de Supabase prin
+  // RLS, deci nu pierdem nimic din siguranță, doar viteza pierdută degeaba.
+  const { data: claimsData } = await supabase.auth.getClaims();
+  const userId = claimsData?.claims.sub;
+  if (!userId) return null;
 
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
-    .eq("id", user.id)
+    .eq("id", userId)
     .single();
 
   if (error || !data) return null;
