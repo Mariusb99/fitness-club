@@ -290,6 +290,35 @@ export async function uploadClientPhotoAction(
   return { error: null, success: true };
 }
 
+export async function updateClientPhotoAction(
+  photoId: string,
+  clientId: string,
+  takenAt: string,
+  photoType: PhotoType,
+): Promise<FormState> {
+  const profile = await requireProfile();
+  if (!isSupabaseConfigured()) return { error: DEMO_ERROR };
+  if (!takenAt) return { error: "Alege o dată." };
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("client_photos")
+    .update({ taken_at: takenAt, photo_type: photoType })
+    .eq("id", photoId);
+  if (error) return { error: "Nu am putut actualiza fotografia." };
+
+  await recordAuditLog({
+    actorId: profile.id,
+    action: "modificare",
+    entityType: "client",
+    entityLabel: clientId,
+    summary: "Fotografie actualizată",
+  });
+
+  revalidatePath(`/clienti/${clientId}`);
+  return { error: null, success: true };
+}
+
 export async function deleteClientPhotoAction(
   photoId: string,
   clientId: string,

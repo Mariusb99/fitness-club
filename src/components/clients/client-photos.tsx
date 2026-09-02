@@ -1,9 +1,10 @@
 "use client";
 
 import { useActionState, useEffect, useState } from "react";
-import { Camera, ImageIcon, Loader2, Trash2, X } from "lucide-react";
+import { Camera, ImageIcon, Loader2, Pencil, Trash2, X } from "lucide-react";
 import {
   deleteClientPhotoAction,
+  updateClientPhotoAction,
   uploadClientPhotoAction,
   type FormState,
 } from "@/app/(app)/clienti/actions";
@@ -15,6 +16,7 @@ import {
   PHOTO_TYPE_LABELS,
   type ClientPhoto,
   type PhotoAngle,
+  type PhotoType,
 } from "@/lib/types";
 
 const initialState: FormState = { error: null };
@@ -46,6 +48,7 @@ export function ClientPhotos({
   const [toDelete, setToDelete] = useState<ClientPhoto | null>(null);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<ClientPhoto | null>(null);
 
   // Doar unghiurile pentru care există măcar o fotografie primesc un tab —
   // altfel am arăta taburi goale, fără nimic de comparat înăuntru.
@@ -208,16 +211,31 @@ export function ClientPhotos({
                         loading="lazy"
                       />
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setToDelete(photo);
-                      }}
-                      aria-label="Șterge fotografia"
-                      className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {/* Butoanele de editare/ștergere sunt mereu vizibile — nu doar la
+                        hover, ca să funcționeze și pe telefon/tabletă, unde nu
+                        există „hover”. */}
+                    <div className="absolute right-1 top-1 flex gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditing(photo);
+                        }}
+                        aria-label="Editează fotografia"
+                        className="flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white transition-colors hover:bg-black/90"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setToDelete(photo);
+                        }}
+                        aria-label="Șterge fotografia"
+                        className="flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white transition-colors hover:bg-black/90"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                     <figcaption className="mt-1 flex items-center justify-between gap-1 text-center text-[11px] text-text-faint">
                       <span className="truncate">{formatDate(photo.takenAt)}</span>
                       <Badge variant={TYPE_VARIANT[photo.photoType]}>
@@ -266,6 +284,14 @@ export function ClientPhotos({
         onConfirm={confirmDelete}
         onCancel={() => setToDelete(null)}
       />
+
+      {editing && (
+        <EditPhotoModal
+          photo={editing}
+          clientId={clientId}
+          onDone={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }
@@ -302,6 +328,98 @@ function ComparisonSide({
 
 const inputClass =
   "min-h-11 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-accent";
+
+function EditPhotoModal({
+  photo,
+  clientId,
+  onDone,
+}: {
+  photo: ClientPhoto;
+  clientId: string;
+  onDone: () => void;
+}) {
+  const [takenAt, setTakenAt] = useState(photo.takenAt.slice(0, 10));
+  const [photoType, setPhotoType] = useState<PhotoType>(photo.photoType);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setPending(true);
+    setError(null);
+    const result = await updateClientPhotoAction(photo.id, clientId, takenAt, photoType);
+    setPending(false);
+    if (result.error) setError(result.error);
+    else onDone();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        aria-label="Închide"
+        onClick={onDone}
+        className="absolute inset-0 h-full w-full bg-black/70"
+      />
+      <div className="relative flex w-full max-w-sm flex-col gap-4 rounded-xl border border-border bg-surface-2 p-5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold">
+            Editează — {PHOTO_ANGLE_LABELS[photo.angle]}
+          </h3>
+          <button
+            onClick={onDone}
+            aria-label="Închide"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-text-muted hover:bg-surface-hover"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-text-muted">Data</span>
+          <input
+            type="date"
+            value={takenAt}
+            onChange={(e) => setTakenAt(e.target.value)}
+            max={new Date().toISOString().slice(0, 10)}
+            className={inputClass}
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-text-muted">Moment</span>
+          <select
+            value={photoType}
+            onChange={(e) => setPhotoType(e.target.value as PhotoType)}
+            className={inputClass}
+          >
+            <option value="before">Înainte</option>
+            <option value="progress">Progres</option>
+            <option value="after">După</option>
+          </select>
+        </label>
+
+        {error && <p className="text-sm text-accent">{error}</p>}
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onDone}
+            className="min-h-11 rounded-lg border border-border px-4 py-2 text-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
+          >
+            Renunță
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={pending}
+            className="flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-60"
+          >
+            {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+            Salvează
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function PhotoSetForm({ clientId, onDone }: { clientId: string; onDone: () => void }) {
   const [state, formAction, pending] = useActionState(uploadClientPhotoAction, initialState);
