@@ -45,6 +45,16 @@ export function MeasurementForm({
         <input type="hidden" name="clientId" value={clientId} />
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-text-muted">Data actualizării</span>
+            <input
+              name="recordedAt"
+              type="date"
+              defaultValue={new Date().toISOString().slice(0, 10)}
+              max={new Date().toISOString().slice(0, 10)}
+              className={inputClass}
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-text-muted">Greutate (kg) *</span>
             <input name="weightKg" type="number" inputMode="decimal" step="0.1" required className={inputClass} />
           </label>

@@ -106,6 +106,7 @@ export async function addMeasurementAction(
   const clientId = String(formData.get("clientId") ?? "");
   const weightKg = Number(formData.get("weightKg"));
   const heightCm = Number(formData.get("heightCm"));
+  const recordedAt = String(formData.get("recordedAt") ?? "");
   if (!clientId || !weightKg || !heightCm) {
     return { error: "Completează cel puțin greutatea și înălțimea." };
   }
@@ -114,6 +115,7 @@ export async function addMeasurementAction(
   const { error } = await supabase.from("measurements").insert({
     client_id: clientId,
     is_initial: false,
+    recorded_at: recordedAt || new Date().toISOString().slice(0, 10),
     weight_kg: weightKg,
     height_cm: heightCm,
     arms_cm: numOrNull(formData.get("arms")),
