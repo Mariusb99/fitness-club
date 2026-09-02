@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState, useTransition } from "react";
-import { Camera, Check, ImageIcon, Loader2, Trash2, Upload, X } from "lucide-react";
+import { useActionState, useEffect, useState } from "react";
+import { Camera, ImageIcon, Loader2, Trash2, X } from "lucide-react";
 import {
   deleteClientPhotoAction,
   uploadClientPhotoAction,
@@ -41,36 +41,52 @@ export function ClientPhotos({
   photos: ClientPhoto[];
 }) {
   const [open, setOpen] = useState(false);
+  const [formKey, setFormKey] = useState(0);
   const [preview, setPreview] = useState<ClientPhoto | null>(null);
   const [toDelete, setToDelete] = useState<ClientPhoto | null>(null);
-  const [deletePending, startDelete] = useTransition();
+  const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  // Pentru fiecare unghi păstrăm prima poză „înainte" și ultima „după" —
-  // exact perechea care arată evoluția din acel unghi.
-  const comparisons = PHOTO_ANGLES.map((angle) => {
-    const ofAngle = photos
-      .filter((p) => p.angle === angle)
-      .sort((a, b) => a.takenAt.localeCompare(b.takenAt));
-    const before = ofAngle.find((p) => p.photoType === "before");
-    const afterList = ofAngle.filter((p) => p.photoType === "after");
-    const after = afterList[afterList.length - 1];
-    return { angle, before, after };
-  }).filter((c) => c.before && c.after);
-
-  const missingAngles = PHOTO_ANGLES.filter(
-    (angle) => !photos.some((p) => p.angle === angle),
+  // Doar unghiurile pentru care există măcar o fotografie primesc un tab —
+  // altfel am arăta taburi goale, fără nimic de comparat înăuntru.
+  const anglesWithPhotos = PHOTO_ANGLES.filter((angle) =>
+    photos.some((p) => p.angle === angle),
   );
+  const missingAngles = PHOTO_ANGLES.filter((angle) => !photos.some((p) => p.angle === angle));
+
+  // Unghiul ales explicit de utilizator, dacă a apăsat pe un tab. Dacă acel
+  // unghi nu mai are fotografii (a fost șters) sau nu a fost ales încă,
+  // recădem pe primul unghi disponibil — calculat direct la randare, fără
+  // un efect separat care să sincronizeze o a doua bucată de stare.
+  const [angleOverride, setAngleOverride] = useState<PhotoAngle | null>(null);
+  const activeAngle =
+    (angleOverride && anglesWithPhotos.includes(angleOverride)
+      ? angleOverride
+      : anglesWithPhotos[0]) ?? null;
+
+  // Reține, per unghi, care fotografie e aleasă ca parte „Acum” a
+  // comparației — ca la schimbarea taburilor să nu pierdem alegerea făcută
+  // anterior pe fiecare unghi.
+  const [nowByAngle, setNowByAngle] = useState<Partial<Record<PhotoAngle, string>>>({});
+
+  const anglePhotos = activeAngle
+    ? photos.filter((p) => p.angle === activeAngle).sort((a, b) => a.takenAt.localeCompare(b.takenAt))
+    : [];
+  const before = anglePhotos[0];
+  const selectedNowId = activeAngle ? nowByAngle[activeAngle] : undefined;
+  const now = anglePhotos.find((p) => p.id === selectedNowId) ?? anglePhotos[anglePhotos.length - 1];
 
   function confirmDelete() {
     if (!toDelete) return;
     setDeleteError(null);
     const photo = toDelete;
-    startDelete(async () => {
+    setDeletePending(true);
+    (async () => {
       const result = await deleteClientPhotoAction(photo.id, clientId, photo.path);
+      setDeletePending(false);
       setDeleteError(result.error);
       if (!result.error) setToDelete(null);
-    });
+    })();
   }
 
   return (
@@ -84,15 +100,28 @@ export function ClientPhotos({
           </p>
         </div>
         <button
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => {
+            if (open) {
+              setOpen(false);
+            } else {
+              setFormKey((k) => k + 1);
+              setOpen(true);
+            }
+          }}
           className="flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
         >
           {open ? <X className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
-          {open ? "Renunță" : "Adaugă fotografie"}
+          {open ? "Renunță" : "Evoluție lunară"}
         </button>
       </div>
 
-      {open && <PhotoUploadForm clientId={clientId} onDone={() => setOpen(false)} />}
+      {open && (
+        <PhotoSetForm
+          key={formKey}
+          clientId={clientId}
+          onDone={() => setOpen(false)}
+        />
+      )}
 
       {photos.length > 0 && missingAngles.length > 0 && (
         <p className="text-xs text-text-faint">
@@ -110,86 +139,97 @@ export function ClientPhotos({
           <p className="text-sm">Fără fotografii încărcate</p>
         </div>
       ) : (
-        <>
-          {comparisons.length > 0 && (
-            <div className="rounded-xl border border-accent-soft-border bg-accent-soft/30 p-3 sm:p-4">
-              <p className="mb-3 text-xs font-medium text-accent">
-                Comparație înainte / după, pe unghiuri
-              </p>
-              <div className="flex flex-col gap-4">
-                {comparisons.map(({ angle, before, after }) => (
-                  <div key={angle}>
-                    <p className="mb-1.5 text-xs font-medium text-text-muted">
-                      {PHOTO_ANGLE_LABELS[angle]}
-                    </p>
-                    <div className="grid grid-cols-2 gap-3">
-                      <ComparisonSide
-                        label="Înainte"
-                        photo={before!}
-                        onOpen={() => setPreview(before!)}
-                      />
-                      <ComparisonSide
-                        label="După"
-                        photo={after!}
-                        onOpen={() => setPreview(after!)}
-                      />
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-2 border-b border-border-soft pb-2">
+            {anglesWithPhotos.map((angle) => {
+              const count = photos.filter((p) => p.angle === angle).length;
+              const isActive = angle === activeAngle;
+              return (
+                <button
+                  key={angle}
+                  onClick={() => setAngleOverride(angle)}
+                  className={
+                    "flex min-h-9 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors " +
+                    (isActive
+                      ? "bg-accent-soft text-accent font-medium"
+                      : "text-text-muted hover:bg-surface-hover hover:text-text")
+                  }
+                >
+                  {PHOTO_ANGLE_LABELS[angle]}
+                  <span className={isActive ? "text-accent/70" : "text-text-faint"}>{count}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {before && (
+            <div className="flex flex-col gap-4 lg:flex-row">
+              <div className="flex-1">
+                {now && now.id !== before.id ? (
+                  <p className="mb-3 text-xs font-medium text-text-muted">
+                    Alege un unghi și două momente diferite.
+                  </p>
+                ) : null}
+                <div className="grid grid-cols-2 gap-3">
+                  <ComparisonSide
+                    label="Înainte"
+                    photo={before}
+                    onOpen={() => setPreview(before)}
+                  />
+                  {now && now.id !== before.id ? (
+                    <ComparisonSide label="Acum" photo={now} onOpen={() => setPreview(now)} />
+                  ) : (
+                    <div className="flex aspect-[3/4] w-full items-center justify-center rounded-xl border border-dashed border-border text-center text-xs text-text-faint">
+                      Adaugă încă o fotografie din acest unghi ca să vezi o comparație
                     </div>
-                  </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex gap-3 overflow-x-auto pb-1 lg:w-44 lg:flex-none lg:flex-col lg:overflow-visible lg:pb-0">
+                {[...anglePhotos].reverse().map((photo) => (
+                  <figure key={photo.id} className="group relative w-24 flex-none lg:w-full">
+                    <button
+                      onClick={() =>
+                        setNowByAngle((s) => ({ ...s, [activeAngle as PhotoAngle]: photo.id }))
+                      }
+                      className={
+                        "block w-full overflow-hidden rounded-lg border transition-colors " +
+                        (now?.id === photo.id
+                          ? "border-accent"
+                          : "border-border hover:border-text-faint")
+                      }
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={photo.url}
+                        alt={`${PHOTO_ANGLE_LABELS[photo.angle]} — ${formatDate(photo.takenAt)}`}
+                        className="aspect-[3/4] w-full object-cover"
+                        loading="lazy"
+                      />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setToDelete(photo);
+                      }}
+                      aria-label="Șterge fotografia"
+                      className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                    <figcaption className="mt-1 flex items-center justify-between gap-1 text-center text-[11px] text-text-faint">
+                      <span className="truncate">{formatDate(photo.takenAt)}</span>
+                      <Badge variant={TYPE_VARIANT[photo.photoType]}>
+                        {PHOTO_TYPE_LABELS[photo.photoType]}
+                      </Badge>
+                    </figcaption>
+                  </figure>
                 ))}
               </div>
             </div>
           )}
-
-          {PHOTO_ANGLES.map((angle) => {
-            const group = photos
-              .filter((p) => p.angle === angle)
-              .sort((a, b) => a.takenAt.localeCompare(b.takenAt));
-            if (group.length === 0) return null;
-            return (
-              <div key={angle}>
-                <p className="mb-2 text-xs font-medium text-text-muted">
-                  {PHOTO_ANGLE_LABELS[angle]}{" "}
-                  <span className="text-text-faint">
-                    · {group.length} {group.length === 1 ? "fotografie" : "fotografii"}
-                  </span>
-                </p>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {group.map((photo) => (
-                    <figure key={photo.id} className="group relative">
-                      <button
-                        onClick={() => setPreview(photo)}
-                        className="block w-full overflow-hidden rounded-xl border border-border"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={photo.url}
-                          alt={`${PHOTO_ANGLE_LABELS[angle]} — ${PHOTO_TYPE_LABELS[photo.photoType]}, ${formatDate(photo.takenAt)}`}
-                          className="aspect-[3/4] w-full object-cover"
-                          loading="lazy"
-                        />
-                      </button>
-                      <span className="absolute left-2 top-2">
-                        <Badge variant={TYPE_VARIANT[photo.photoType]}>
-                          {PHOTO_TYPE_LABELS[photo.photoType]}
-                        </Badge>
-                      </span>
-                      <button
-                        onClick={() => setToDelete(photo)}
-                        aria-label="Șterge fotografia"
-                        className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-lg bg-black/70 text-white opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                      <figcaption className="mt-1 text-center text-xs text-text-faint">
-                        {formatDate(photo.takenAt)}
-                      </figcaption>
-                    </figure>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </>
+        </div>
       )}
 
       {deleteError && <p className="text-xs text-accent">{deleteError}</p>}
@@ -263,46 +303,30 @@ function ComparisonSide({
 const inputClass =
   "min-h-11 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-accent";
 
-function PhotoUploadForm({ clientId, onDone }: { clientId: string; onDone: () => void }) {
+function PhotoSetForm({ clientId, onDone }: { clientId: string; onDone: () => void }) {
   const [state, formAction, pending] = useActionState(uploadClientPhotoAction, initialState);
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [angle, setAngle] = useState<PhotoAngle>("fata");
-  const [uploadedCount, setUploadedCount] = useState(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  // Reține ultimul rezultat de succes deja procesat, ca să nu reluăm
-  // avansarea la unghiul următor dacă acest component se re-randează din
-  // alt motiv fără ca `state` să se fi schimbat cu adevărat.
-  const lastHandledState = useRef<FormState | null>(null);
+  const [slots, setSlots] = useState<Partial<Record<PhotoAngle, { url: string; name: string }>>>(
+    {},
+  );
 
-  // După o încărcare reușită nu închidem formularul, ci trecem la unghiul
-  // următor — ca să poți face rapid setul complet de patru poze, fără să
-  // redeschizi formularul de fiecare dată. Efectul reacționează la
-  // rezultatul acțiunii de server (un sistem extern), deci e locul potrivit
-  // pentru el — dar grupăm toate actualizările într-un singur setState.
   useEffect(() => {
-    if (!state.success || lastHandledState.current === state) return;
-    lastHandledState.current = state;
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    setFileName(null);
-    setUploadedCount((n) => n + 1);
-    setAngle((current) => {
-      const next = PHOTO_ANGLES.indexOf(current) + 1;
-      return next < PHOTO_ANGLES.length ? PHOTO_ANGLES[next] : current;
-    });
-  }, [state]);
+    if (state.success) onDone();
+  }, [state.success, onDone]);
 
-  /**
-   * Un singur input de fișier pentru ambele butoane — altfel formularul ar
-   * trimite două câmpuri cu același nume și ar ajunge pe server cel gol.
-   * `capture` se pune doar când utilizatorul cere explicit camera.
-   */
-  function pickFile(useCamera: boolean) {
-    const input = fileInputRef.current;
-    if (!input) return;
-    if (useCamera) input.setAttribute("capture", "environment");
-    else input.removeAttribute("capture");
-    input.click();
+  function pickFile(angle: PhotoAngle, file: File | null | undefined) {
+    setSlots((current) => {
+      const previous = current[angle];
+      if (previous) URL.revokeObjectURL(previous.url);
+      if (!file) {
+        const next = { ...current };
+        delete next[angle];
+        return next;
+      }
+      return { ...current, [angle]: { url: URL.createObjectURL(file), name: file.name } };
+    });
   }
+
+  const hasAnyPhoto = Object.keys(slots).length > 0;
 
   return (
     <form
@@ -311,80 +335,92 @@ function PhotoUploadForm({ clientId, onDone }: { clientId: string; onDone: () =>
     >
       <input type="hidden" name="clientId" value={clientId} />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div>
+        <h3 className="text-sm font-semibold">Evoluție lunară</h3>
+        <p className="mt-0.5 text-xs text-text-muted">
+          Adaugă un set de fotografii realizate în aceeași zi.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-text-muted">Unghi *</span>
-          <select
-            name="angle"
-            value={angle}
-            onChange={(e) => setAngle(e.target.value as PhotoAngle)}
+          <span className="text-xs font-medium text-text-muted">Data fotografiilor</span>
+          <input
+            name="takenAt"
+            type="date"
+            defaultValue={new Date().toISOString().slice(0, 10)}
+            max={new Date().toISOString().slice(0, 10)}
             className={inputClass}
-          >
-            {PHOTO_ANGLES.map((a) => (
-              <option key={a} value={a}>
-                {PHOTO_ANGLE_LABELS[a]}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-text-muted">Moment *</span>
+          <span className="text-xs font-medium text-text-muted">Moment</span>
           <select name="photoType" defaultValue="progress" className={inputClass}>
             <option value="before">Înainte</option>
             <option value="progress">Progres</option>
             <option value="after">După</option>
           </select>
         </label>
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-text-muted">Data fotografiei</span>
-          <input
-            name="takenAt"
-            type="date"
-            defaultValue={new Date().toISOString().slice(0, 10)}
-            className={inputClass}
-          />
-        </label>
       </div>
 
-      {/* Pe telefon, `capture` deschide direct camera; pe desktop browserul
-          ignoră atributul și afișează selectorul obișnuit de fișiere. */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        name="file"
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => setFileName(e.target.files?.[0]?.name ?? null)}
-      />
-
-      <div className="grid grid-cols-2 gap-3">
-        <button
-          type="button"
-          onClick={() => pickFile(true)}
-          className="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
-        >
-          <Camera className="h-4 w-4" />
-          Fă o poză
-        </button>
-        <button
-          type="button"
-          onClick={() => pickFile(false)}
-          className="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
-        >
-          <Upload className="h-4 w-4" />
-          Alege din galerie
-        </button>
-      </div>
-
-      {fileName && <p className="truncate text-xs text-text-muted">Selectat: {fileName}</p>}
-      {state.error && <p className="text-sm text-accent">{state.error}</p>}
-      {uploadedCount > 0 && !state.error && (
-        <p className="flex items-center gap-1.5 text-xs text-success">
-          <Check className="h-3.5 w-3.5" />
-          {uploadedCount} {uploadedCount === 1 ? "fotografie încărcată" : "fotografii încărcate"} —
-          continuă cu următorul unghi sau apasă „Gata”.
+      <div>
+        <p className="mb-2 text-xs font-medium text-text-muted">Fotografii</p>
+        <p className="mb-3 text-xs text-text-faint">
+          Poți adăuga una sau toate pozițiile. Apasă din nou pentru a înlocui poza.
         </p>
-      )}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {PHOTO_ANGLES.map((angle) => {
+            const slot = slots[angle];
+            return (
+              <label
+                key={angle}
+                className="relative flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border border-dashed border-border bg-surface text-center transition-colors hover:border-accent"
+              >
+                <input
+                  type="file"
+                  name={`file_${angle}`}
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => pickFile(angle, e.target.files?.[0])}
+                />
+                {slot ? (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={slot.url}
+                      alt={PHOTO_ANGLE_LABELS[angle]}
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                    <span className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 text-[11px] text-white">
+                      {PHOTO_ANGLE_LABELS[angle]}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        pickFile(angle, null);
+                      }}
+                      aria-label={`Elimină poza — ${PHOTO_ANGLE_LABELS[angle]}`}
+                      className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <ImageIcon className="h-6 w-6 text-text-faint" />
+                    <span className="text-xs text-text-muted">Adaugă</span>
+                    <span className="text-[11px] text-text-faint">{PHOTO_ANGLE_LABELS[angle]}</span>
+                  </>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
+      {state.error && <p className="text-sm text-accent">{state.error}</p>}
 
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <button
@@ -392,15 +428,15 @@ function PhotoUploadForm({ clientId, onDone }: { clientId: string; onDone: () =>
           onClick={onDone}
           className="min-h-11 rounded-lg border border-border px-4 py-2 text-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
         >
-          {uploadedCount > 0 ? "Gata" : "Renunță"}
+          Renunță
         </button>
         <button
           type="submit"
-          disabled={pending || !fileName}
+          disabled={pending || !hasAnyPhoto}
           className="flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-60"
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-          Încarcă fotografia
+          Încarcă evoluția lunară
         </button>
       </div>
     </form>

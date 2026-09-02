@@ -7,7 +7,7 @@ import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
 import { recordAuditLog } from "@/lib/data/audit";
 import { PHOTO_BUCKET } from "@/lib/data/clients";
-import type { PhotoAngle, PhotoType } from "@/lib/types";
+import { PHOTO_ANGLES, PHOTO_ANGLE_LABELS, type PhotoAngle, type PhotoType } from "@/lib/types";
 
 export interface FormState {
   error: string | null;
@@ -190,6 +190,13 @@ export async function updateClientStatusAction(
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MB
 const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
 
+/**
+ * Salvează un set întreg de „evoluție lunară" într-o singură acțiune: una
+ * sau mai multe poze (câte una per unghi — Față, Spate, Lateral stânga,
+ * Lateral dreapta), toate cu aceeași dată și același moment. Antrenorul
+ * alege data o singură dată, adaugă câte poze vrea, apasă „Încarcă" o
+ * singură dată — nu mai reia formularul pentru fiecare unghi în parte.
+ */
 export async function uploadClientPhotoAction(
   _prev: FormState,
   formData: FormData,
@@ -199,19 +206,28 @@ export async function uploadClientPhotoAction(
 
   const clientId = String(formData.get("clientId") ?? "");
   const photoType = String(formData.get("photoType") ?? "progress") as PhotoType;
-  const angle = String(formData.get("angle") ?? "fata") as PhotoAngle;
-  const takenAt = String(formData.get("takenAt") ?? "");
-  const file = formData.get("file");
+  const takenAt = String(formData.get("takenAt") ?? "") || new Date().toISOString().slice(0, 10);
 
   if (!clientId) return { error: "Client lipsă." };
-  if (!(file instanceof File) || file.size === 0) {
-    return { error: "Alege o fotografie de încărcat." };
+
+  const entries = PHOTO_ANGLES.map((angle) => ({
+    angle,
+    file: formData.get(`file_${angle}`),
+  })).filter(
+    (entry): entry is { angle: PhotoAngle; file: File } =>
+      entry.file instanceof File && entry.file.size > 0,
+  );
+
+  if (entries.length === 0) {
+    return { error: "Adaugă cel puțin o fotografie." };
   }
-  if (file.size > MAX_PHOTO_BYTES) {
-    return { error: "Fotografia depășește 10 MB. Încearcă una mai mică." };
-  }
-  if (file.type && !ALLOWED_PHOTO_TYPES.includes(file.type)) {
-    return { error: "Format neacceptat — folosește JPG, PNG sau WEBP." };
+  for (const { angle, file } of entries) {
+    if (file.size > MAX_PHOTO_BYTES) {
+      return { error: `Fotografia „${PHOTO_ANGLE_LABELS[angle]}" depășește 10 MB.` };
+    }
+    if (file.type && !ALLOWED_PHOTO_TYPES.includes(file.type)) {
+      return { error: "Format neacceptat — folosește JPG, PNG sau WEBP." };
+    }
   }
 
   const supabase = await createClient();
@@ -228,28 +244,38 @@ export async function uploadClientPhotoAction(
     return { error: "Nu ai acces la acest client." };
   }
 
-  const extension = (file.name.split(".").pop() ?? "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
-  const path = `${clientId}/${crypto.randomUUID()}.${extension || "jpg"}`;
-
-  const { error: uploadError } = await supabase.storage
-    .from(PHOTO_BUCKET)
-    .upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
-  if (uploadError) {
-    return { error: `Nu am putut încărca fotografia: ${uploadError.message}` };
+  const uploadedPaths: string[] = [];
+  for (const { angle, file } of entries) {
+    const extension = (file.name.split(".").pop() ?? "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const path = `${clientId}/${crypto.randomUUID()}.${extension || "jpg"}`;
+    const { error: uploadError } = await supabase.storage
+      .from(PHOTO_BUCKET)
+      .upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
+    if (uploadError) {
+      // Curățăm ce am reușit să încărcăm până la eroare, ca să nu rămână
+      // fișiere orfane în Storage.
+      if (uploadedPaths.length > 0) await supabase.storage.from(PHOTO_BUCKET).remove(uploadedPaths);
+      return {
+        error: `Nu am putut încărca fotografia „${PHOTO_ANGLE_LABELS[angle]}": ${uploadError.message}`,
+      };
+    }
+    uploadedPaths.push(path);
   }
 
-  const { error: insertError } = await supabase.from("client_photos").insert({
-    client_id: clientId,
-    photo_type: photoType,
-    angle,
-    file_path: path,
-    taken_at: takenAt || new Date().toISOString().slice(0, 10),
-  });
+  const { error: insertError } = await supabase.from("client_photos").insert(
+    entries.map((entry, i) => ({
+      client_id: clientId,
+      photo_type: photoType,
+      angle: entry.angle,
+      file_path: uploadedPaths[i],
+      taken_at: takenAt,
+    })),
+  );
   if (insertError) {
-    // Fișierul a ajuns în Storage dar nu s-a putut lega de client — îl
-    // ștergem, ca să nu rămână orfan și să ocupe spațiu degeaba.
-    await supabase.storage.from(PHOTO_BUCKET).remove([path]);
-    return { error: "Nu am putut salva fotografia. Încearcă din nou." };
+    // Fișierele au ajuns în Storage dar nu s-au putut lega de client — le
+    // ștergem, ca să nu rămână orfane și să ocupe spațiu degeaba.
+    await supabase.storage.from(PHOTO_BUCKET).remove(uploadedPaths);
+    return { error: "Nu am putut salva fotografiile. Încearcă din nou." };
   }
 
   await recordAuditLog({
@@ -257,7 +283,7 @@ export async function uploadClientPhotoAction(
     action: "creare",
     entityType: "client",
     entityLabel: clientId,
-    summary: "Fotografie adăugată",
+    summary: `Evoluție lunară adăugată (${entries.length} ${entries.length === 1 ? "fotografie" : "fotografii"})`,
   });
 
   revalidatePath(`/clienti/${clientId}`);
