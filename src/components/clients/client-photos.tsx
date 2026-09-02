@@ -1,25 +1,26 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useState } from "react";
 import { Camera, ImageIcon, Loader2, Pencil, Trash2, X } from "lucide-react";
 import {
   deleteClientPhotoAction,
+  saveClientPhotoSetAction,
   updateClientPhotoAction,
-  uploadClientPhotoAction,
-  type FormState,
 } from "@/app/(app)/clienti/actions";
+import { createClient } from "@/lib/supabase/client";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import {
+  ALLOWED_PHOTO_TYPES,
+  MAX_PHOTO_BYTES,
   PHOTO_ANGLES,
   PHOTO_ANGLE_LABELS,
+  PHOTO_BUCKET,
   PHOTO_TYPE_LABELS,
   type ClientPhoto,
   type PhotoAngle,
   type PhotoType,
 } from "@/lib/types";
-
-const initialState: FormState = { error: null };
 
 const TYPE_VARIANT = {
   before: "neutral",
@@ -422,14 +423,13 @@ function EditPhotoModal({
 }
 
 function PhotoSetForm({ clientId, onDone }: { clientId: string; onDone: () => void }) {
-  const [state, formAction, pending] = useActionState(uploadClientPhotoAction, initialState);
-  const [slots, setSlots] = useState<Partial<Record<PhotoAngle, { url: string; name: string }>>>(
+  const [slots, setSlots] = useState<Partial<Record<PhotoAngle, { url: string; file: File }>>>(
     {},
   );
-
-  useEffect(() => {
-    if (state.success) onDone();
-  }, [state.success, onDone]);
+  const [takenAt, setTakenAt] = useState(new Date().toISOString().slice(0, 10));
+  const [photoType, setPhotoType] = useState<PhotoType>("progress");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   function pickFile(angle: PhotoAngle, file: File | null | undefined) {
     setSlots((current) => {
@@ -440,19 +440,71 @@ function PhotoSetForm({ clientId, onDone }: { clientId: string; onDone: () => vo
         delete next[angle];
         return next;
       }
-      return { ...current, [angle]: { url: URL.createObjectURL(file), name: file.name } };
+      return { ...current, [angle]: { url: URL.createObjectURL(file), file } };
     });
   }
 
   const hasAnyPhoto = Object.keys(slots).length > 0;
 
+  // Fotografiile se încarcă direct din browser în Supabase Storage — nu
+  // prin acțiunea de server, care ar rula pe o funcție Vercel limitată la
+  // 4.5 MB per cerere. Serverul intervine abia la final, doar ca să lege
+  // căile deja urcate de client (o cerere mică, fără poze în ea).
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+
+    const entries = Object.entries(slots) as [PhotoAngle, { url: string; file: File }][];
+    if (entries.length === 0) {
+      setError("Adaugă cel puțin o fotografie.");
+      return;
+    }
+    for (const [angle, { file }] of entries) {
+      if (file.size > MAX_PHOTO_BYTES) {
+        setError(`Fotografia „${PHOTO_ANGLE_LABELS[angle]}" depășește 10 MB.`);
+        return;
+      }
+      if (file.type && !ALLOWED_PHOTO_TYPES.includes(file.type)) {
+        setError("Format neacceptat — folosește JPG, PNG sau WEBP.");
+        return;
+      }
+    }
+
+    setPending(true);
+    const supabase = createClient();
+    const uploadedPaths: string[] = [];
+    const uploadedEntries: { angle: PhotoAngle; path: string }[] = [];
+
+    for (const [angle, { file }] of entries) {
+      const extension = (file.name.split(".").pop() ?? "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const path = `${clientId}/${crypto.randomUUID()}.${extension || "jpg"}`;
+      const { error: uploadError } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
+      if (uploadError) {
+        if (uploadedPaths.length > 0) await supabase.storage.from(PHOTO_BUCKET).remove(uploadedPaths);
+        setPending(false);
+        setError(`Nu am putut încărca fotografia „${PHOTO_ANGLE_LABELS[angle]}": ${uploadError.message}`);
+        return;
+      }
+      uploadedPaths.push(path);
+      uploadedEntries.push({ angle, path });
+    }
+
+    const result = await saveClientPhotoSetAction(clientId, takenAt, photoType, uploadedEntries);
+    setPending(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    onDone();
+  }
+
   return (
     <form
-      action={formAction}
+      onSubmit={handleSubmit}
       className="flex flex-col gap-4 rounded-xl border border-border bg-surface-2 p-4"
     >
-      <input type="hidden" name="clientId" value={clientId} />
-
       <div>
         <h3 className="text-sm font-semibold">Evoluție lunară</h3>
         <p className="mt-0.5 text-xs text-text-muted">
@@ -464,16 +516,20 @@ function PhotoSetForm({ clientId, onDone }: { clientId: string; onDone: () => vo
         <label className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-text-muted">Data fotografiilor</span>
           <input
-            name="takenAt"
             type="date"
-            defaultValue={new Date().toISOString().slice(0, 10)}
+            value={takenAt}
+            onChange={(e) => setTakenAt(e.target.value)}
             max={new Date().toISOString().slice(0, 10)}
             className={inputClass}
           />
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-text-muted">Moment</span>
-          <select name="photoType" defaultValue="progress" className={inputClass}>
+          <select
+            value={photoType}
+            onChange={(e) => setPhotoType(e.target.value as PhotoType)}
+            className={inputClass}
+          >
             <option value="before">Înainte</option>
             <option value="progress">Progres</option>
             <option value="after">După</option>
@@ -496,7 +552,6 @@ function PhotoSetForm({ clientId, onDone }: { clientId: string; onDone: () => vo
               >
                 <input
                   type="file"
-                  name={`file_${angle}`}
                   accept="image/*"
                   className="hidden"
                   onChange={(e) => pickFile(angle, e.target.files?.[0])}
@@ -538,7 +593,7 @@ function PhotoSetForm({ clientId, onDone }: { clientId: string; onDone: () => vo
         </div>
       </div>
 
-      {state.error && <p className="text-sm text-accent">{state.error}</p>}
+      {error && <p className="text-sm text-accent">{error}</p>}
 
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <button

@@ -51,6 +51,16 @@ export interface Measurement {
   notes: string | null;
 }
 
+/** Bucketul privat din Supabase Storage în care stau fotografiile clienților. */
+export const PHOTO_BUCKET = "client-photos";
+
+/** Fotografiile se încarcă direct din browser în Supabase Storage (vezi
+ * `client-photos.tsx`), ca să ocolim limita de 4.5 MB per cerere a
+ * funcțiilor din Vercel — de-aia aceste constante trebuie să fie
+ * accesibile și în cod care rulează în browser, nu doar pe server. */
+export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MB
+export const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
+
 /** Momentul din program în care e făcută fotografia. */
 export type PhotoType = "before" | "after" | "progress";
 

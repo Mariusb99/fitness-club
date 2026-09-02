@@ -6,8 +6,7 @@ import { requireProfile } from "@/lib/auth";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
 import { recordAuditLog } from "@/lib/data/audit";
-import { PHOTO_BUCKET } from "@/lib/data/clients";
-import { PHOTO_ANGLES, PHOTO_ANGLE_LABELS, type PhotoAngle, type PhotoType } from "@/lib/types";
+import { PHOTO_BUCKET, type PhotoAngle, type PhotoType } from "@/lib/types";
 
 export interface FormState {
   error: string | null;
@@ -187,53 +186,34 @@ export async function updateClientStatusAction(
 // FOTOGRAFII CLIENT
 // =========================================================
 
-const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MB
-const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
-
 /**
- * Salvează un set întreg de „evoluție lunară" într-o singură acțiune: una
- * sau mai multe poze (câte una per unghi — Față, Spate, Lateral stânga,
- * Lateral dreapta), toate cu aceeași dată și același moment. Antrenorul
- * alege data o singură dată, adaugă câte poze vrea, apasă „Încarcă" o
- * singură dată — nu mai reia formularul pentru fiecare unghi în parte.
+ * Salvează un set întreg de „evoluție lunară": una sau mai multe poze
+ * (câte una per unghi), toate cu aceeași dată și același moment.
+ *
+ * Fotografiile în sine NU trec prin această acțiune — se încarcă direct
+ * din browser în Supabase Storage (vezi `client-photos.tsx`), pentru că o
+ * funcție server pe Vercel refuză orice cerere peste 4.5 MB, indiferent
+ * ce limită setăm noi în `next.config.ts`. Aici primim doar căile
+ * fișierelor deja urcate și le legăm de client în baza de date — o
+ * cerere mică, mult sub orice limită.
  */
-export async function uploadClientPhotoAction(
-  _prev: FormState,
-  formData: FormData,
+export async function saveClientPhotoSetAction(
+  clientId: string,
+  takenAt: string,
+  photoType: PhotoType,
+  entries: { angle: PhotoAngle; path: string }[],
 ): Promise<FormState> {
   const profile = await requireProfile();
   if (!isSupabaseConfigured()) return { error: DEMO_ERROR };
 
-  const clientId = String(formData.get("clientId") ?? "");
-  const photoType = String(formData.get("photoType") ?? "progress") as PhotoType;
-  const takenAt = String(formData.get("takenAt") ?? "") || new Date().toISOString().slice(0, 10);
-
   if (!clientId) return { error: "Client lipsă." };
-
-  const entries = PHOTO_ANGLES.map((angle) => ({
-    angle,
-    file: formData.get(`file_${angle}`),
-  })).filter(
-    (entry): entry is { angle: PhotoAngle; file: File } =>
-      entry.file instanceof File && entry.file.size > 0,
-  );
-
-  if (entries.length === 0) {
-    return { error: "Adaugă cel puțin o fotografie." };
-  }
-  for (const { angle, file } of entries) {
-    if (file.size > MAX_PHOTO_BYTES) {
-      return { error: `Fotografia „${PHOTO_ANGLE_LABELS[angle]}" depășește 10 MB.` };
-    }
-    if (file.type && !ALLOWED_PHOTO_TYPES.includes(file.type)) {
-      return { error: "Format neacceptat — folosește JPG, PNG sau WEBP." };
-    }
-  }
+  if (entries.length === 0) return { error: "Adaugă cel puțin o fotografie." };
+  const resolvedTakenAt = takenAt || new Date().toISOString().slice(0, 10);
 
   const supabase = await createClient();
 
   // Verificăm explicit că antrenorul are dreptul la acest client, ca să nu
-  // se poată încărca fotografii în dosarul altui antrenor.
+  // se poată lega fotografii de dosarul altui antrenor.
   const { data: client, error: clientError } = await supabase
     .from("clients")
     .select("id, trainer_id")
@@ -244,37 +224,19 @@ export async function uploadClientPhotoAction(
     return { error: "Nu ai acces la acest client." };
   }
 
-  const uploadedPaths: string[] = [];
-  for (const { angle, file } of entries) {
-    const extension = (file.name.split(".").pop() ?? "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const path = `${clientId}/${crypto.randomUUID()}.${extension || "jpg"}`;
-    const { error: uploadError } = await supabase.storage
-      .from(PHOTO_BUCKET)
-      .upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
-    if (uploadError) {
-      // Curățăm ce am reușit să încărcăm până la eroare, ca să nu rămână
-      // fișiere orfane în Storage.
-      if (uploadedPaths.length > 0) await supabase.storage.from(PHOTO_BUCKET).remove(uploadedPaths);
-      return {
-        error: `Nu am putut încărca fotografia „${PHOTO_ANGLE_LABELS[angle]}": ${uploadError.message}`,
-      };
-    }
-    uploadedPaths.push(path);
-  }
-
   const { error: insertError } = await supabase.from("client_photos").insert(
-    entries.map((entry, i) => ({
+    entries.map((entry) => ({
       client_id: clientId,
       photo_type: photoType,
       angle: entry.angle,
-      file_path: uploadedPaths[i],
-      taken_at: takenAt,
+      file_path: entry.path,
+      taken_at: resolvedTakenAt,
     })),
   );
   if (insertError) {
-    // Fișierele au ajuns în Storage dar nu s-au putut lega de client — le
-    // ștergem, ca să nu rămână orfane și să ocupe spațiu degeaba.
-    await supabase.storage.from(PHOTO_BUCKET).remove(uploadedPaths);
+    // Fișierele au ajuns deja în Storage dar nu s-au putut lega de client —
+    // le ștergem, ca să nu rămână orfane și să ocupe spațiu degeaba.
+    await supabase.storage.from(PHOTO_BUCKET).remove(entries.map((e) => e.path));
     return { error: "Nu am putut salva fotografiile. Încearcă din nou." };
   }
 

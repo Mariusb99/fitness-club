@@ -2,10 +2,9 @@ import "server-only";
 import { isSupabaseConfigured } from "../supabase/env";
 import { createClient } from "../supabase/server";
 import { SEED_CLIENTS } from "../seed";
-import type { Client, Measurement, PhotoAngle, PhotoType, Profile } from "../types";
+import { PHOTO_BUCKET, type Client, type Measurement, type PhotoAngle, type PhotoType, type Profile } from "../types";
 
-/** Bucketul privat din Supabase Storage în care stau fotografiile clienților. */
-export const PHOTO_BUCKET = "client-photos";
+export { PHOTO_BUCKET };
 
 function mapMeasurement(row: {
   id: string;
