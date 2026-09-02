@@ -141,6 +141,59 @@ export async function addMeasurementAction(
   return { error: null, success: true };
 }
 
+export async function updateMeasurementAction(
+  measurementId: string,
+  clientId: string,
+  data: {
+    recordedAt: string;
+    weightKg: number;
+    heightCm: number;
+    chest: number | null;
+    waist: number | null;
+    hips: number | null;
+    arms: number | null;
+    thigh: number | null;
+    calf: number | null;
+    notes: string | null;
+  },
+): Promise<FormState> {
+  const profile = await requireProfile();
+  if (!isSupabaseConfigured()) return { error: DEMO_ERROR };
+  if (!data.recordedAt) return { error: "Alege o dată." };
+  if (!data.weightKg || !data.heightCm) {
+    return { error: "Completează cel puțin greutatea și înălțimea." };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("measurements")
+    .update({
+      recorded_at: data.recordedAt,
+      weight_kg: data.weightKg,
+      height_cm: data.heightCm,
+      chest_cm: data.chest,
+      waist_cm: data.waist,
+      hips_cm: data.hips,
+      arms_cm: data.arms,
+      thigh_cm: data.thigh,
+      calf_cm: data.calf,
+      notes: data.notes,
+    })
+    .eq("id", measurementId);
+  if (error) return { error: "Nu am putut actualiza măsurătoarea." };
+
+  await recordAuditLog({
+    actorId: profile.id,
+    action: "modificare",
+    entityType: "masuratoare",
+    entityLabel: clientId,
+    summary: "Măsurătoare actualizată",
+  });
+
+  revalidatePath(`/clienti/${clientId}`);
+  return { error: null, success: true };
+}
+
 export async function deleteClientAction(clientId: string, clientName: string) {
   const profile = await requireProfile();
   if (!isSupabaseConfigured()) return;

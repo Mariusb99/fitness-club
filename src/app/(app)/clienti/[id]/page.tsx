@@ -8,6 +8,7 @@ import { Card } from "@/components/ui/card";
 import { age, bmi } from "@/lib/types";
 import { MeasurementChart } from "@/components/clients/measurement-chart";
 import { MeasurementForm } from "@/components/clients/measurement-form";
+import { MeasurementHistory } from "@/components/clients/measurement-history";
 import { ExportClientPdfButton } from "@/components/clients/export-pdf-button";
 import { StatusSelect, DeleteClientButton } from "@/components/clients/client-actions";
 import { ClientPhotos } from "@/components/clients/client-photos";
@@ -147,51 +148,7 @@ export default async function ClientDetailPage({
 
         <MeasurementChart measurements={client.measurements} />
 
-        <p className="mt-6 text-xs text-text-faint sm:hidden">
-          Glisează tabelul lateral pentru restul coloanelor.
-        </p>
-        <div className="mt-2 overflow-x-auto sm:mt-6">
-          <table className="w-full min-w-[560px] text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs text-text-muted">
-                <th className="py-2 pr-4 font-medium">Data</th>
-                <th className="py-2 pr-4 font-medium">Greutate</th>
-                <th className="py-2 pr-4 font-medium">IMC</th>
-                <th className="py-2 pr-4 font-medium">Talie</th>
-                <th className="py-2 pr-4 font-medium">Șold</th>
-                <th className="py-2 pr-4 font-medium">Braț</th>
-                <th className="py-2 font-medium">Observații</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...sorted].reverse().map((m) => (
-                <tr key={m.id} className="border-b border-border-soft last:border-0">
-                  <td className="py-2.5 pr-4">
-                    {new Date(m.recordedAt).toLocaleDateString("ro-RO")}
-                    {m.isInitial && (
-                      <span className="ml-2">
-                        <Badge variant="accent">inițial</Badge>
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-2.5 pr-4">{m.weightKg} kg</td>
-                  <td className="py-2.5 pr-4">{bmi(m.weightKg, m.heightCm).toFixed(1)}</td>
-                  <td className="py-2.5 pr-4">{m.waist ? `${m.waist} cm` : "—"}</td>
-                  <td className="py-2.5 pr-4">{m.hips ? `${m.hips} cm` : "—"}</td>
-                  <td className="py-2.5 pr-4">{m.arms ? `${m.arms} cm` : "—"}</td>
-                  <td className="py-2.5 text-text-muted">{m.notes ?? "—"}</td>
-                </tr>
-              ))}
-              {sorted.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="py-6 text-center text-text-faint">
-                    Nicio evaluare înregistrată încă.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <MeasurementHistory clientId={client.id} measurements={client.measurements} />
       </Card>
 
       <Card>
